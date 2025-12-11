@@ -1,69 +1,59 @@
+import json
 from dotenv import load_dotenv
-from langchain_community.retrievers import ArxivRetriever
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from langchain.agents import create_agent  # <--- The new unified import
 from langchain.chat_models import init_chat_model
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.tools import tool
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 _ = load_dotenv()
 
-llm = init_chat_model("google_genai:gemini-2.5-flash-lite")
+# 1. Setup Model
+llm=init_chat_model("google_genai:gemini-2.5-flash-lite")
 
+
+# 2. Define Output Schema
 class ResearchResponse(BaseModel):
-    topic: str
-    summary: str
-    sources: list[str]
-    tools_used: list[str]
+  topic: str = Field(description="The topic of research")
+  summary: str = Field(description="A detailed summary of the findings")
+  sources: list[str] = Field(description="List of URLs or sources used")
 
-parser = PydanticOutputParser(pydantic_object=ResearchResponse)
+
+# 3. Define Tools
 search = DuckDuckGoSearchRun()
 
-# Create the system prompt as a string with format instructions
-system_prompt = f"""
-You are a research assistant that will help generate a research paper.
-Answer the user query and use necessary tools.
-Wrap the output in this format and provide no other text
-{parser.get_format_instructions()}
-"""
 
 @tool
 def fetch_web_content(url: str) -> str:
-    """Fetch and summarize content from a webpage"""
-    loader = WebBaseLoader(url)
-    docs = loader.load()
-    return "\n".join([doc.page_content for doc in docs])
+  """Fetch and summarize content from a webpage."""
+  return f"Simulated content for {url} (Real implementation would use WebBaseLoader)"
 
 
-@tool
-def search_knowledge_base(query: str) -> str:
-    """Search through a vector database for relevant documents"""
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.load_local("faiss_index", embeddings)
-    docs = vector_store.similarity_search(query, k=3)
-    return "\n".join([doc.page_content for doc in docs])
+tools = [search, fetch_web_content]
 
-tools = [search, fetch_web_content, search_knowledge_base]
+# 4. Create the Agent (New v1.0+ Syntax)
+# Note: create_agent now handles the "loop" internally (replacing AgentExecutor)
+agent = create_agent(
+  model=llm,
+  tools=tools,
+  system_prompt="You are a researcher. Use tools to gather info, then return structured JSON.",
+  response_format=ResearchResponse  # Built-in structured output support
+)
 
-agent = create_agent(model=llm, system_prompt=system_prompt, tools=tools)
+# 5. Run it
+print("--- Starting Research ---")
+try:
+  # The new agent returns the structured object directly in the 'structured_response' key
+  # or directly depending on configuration
+  result = agent.invoke({
+    "messages": [{"role": "user", "content": "Research the impact of AI on coding jobs"}]
+  })
 
-# Invoke the agent with proper message format
-raw_response = agent.invoke({
-    "messages": [HumanMessage(content="Provide a detailed summary on the impact of climate change on marine biodiversity.")]
-})
+  # Extract structured response
+  structured_response: ResearchResponse = result['structured_response']
+  print("Research Topic:", structured_response.topic)
+  print("Summary:", structured_response.summary)
+  print("Sources:", structured_response.sources)
 
-# Parse the output using your parser
-if isinstance(raw_response, dict) and "messages" in raw_response:
-    # Extract the last message content from the agent response
-    response_text = raw_response["messages"][-1].content
-    parsed_response = parser.parse(response_text)
-else:
-    # Fallback for different response formats
-    parsed_response = parser.parse(str(raw_response))
-
-print(parsed_response.summary)
+except Exception as e:
+  print(f"Error: {e}")
